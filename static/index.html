@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>错题 LaTeX</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<div id="login">
+  <div class="box">
+    <b>输入访问密码</b>
+    <input type="password" id="pw" autocomplete="current-password">
+    <button id="btnLogin">进入</button>
+    <div class="s" id="le"></div>
+  </div>
+</div>
+
+<h1>错题 LaTeX</h1>
+<div class="p">
+  <label for="cam">拍照</label>
+  <label for="gal">相册</label>
+</div>
+<input id="cam" type="file" accept="image/*" capture="environment" hidden>
+<input id="gal" type="file" accept="image/*" multiple hidden>
+<div id="bar"></div>
+<div id="list"></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
