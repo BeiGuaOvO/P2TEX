@@ -31,12 +31,23 @@ async function shrink(f) {
     return await new Promise(r => c.toBlob(r, 'image/jpeg', 0.9));
   } catch (e) { return f; }
 }
+async function prepare(f, i, n) {
+  if (typeof window.cropImage !== 'function') return await shrink(f);
+  const tag = n > 1 ? '第 ' + (i + 1) + ' / ' + n + ' 张' : '';
+  const c = await window.cropImage(f, tag);
+  if (c === null) return null;              // 取消
+  if (c === false) return await shrink(f);  // 跳过裁剪
+  return c;                                 // 已裁剪的 JPEG
+}
+
 async function up(files) {
   const a = Array.from(files);
   for (let i = 0; i < a.length; i++) {
-    bar.textContent = '上传中 ' + (i+1) + '/' + a.length;
+    bar.textContent = '处理中 ' + (i + 1) + '/' + a.length;
+    const blob = await prepare(a[i], i, a.length);
+    if (!blob) { bar.textContent = '已取消'; return; }
     const fd = new FormData();
-    fd.append('file', await shrink(a[i]), 'p.jpg');
+    fd.append('file', blob, 'p.jpg');
     try {
       const r = await api('/api/uploads', {method:'POST', body:fd});
       const j = await r.json();
@@ -101,3 +112,40 @@ $('#cam').onchange = e => { up(e.target.files); e.target.value=''; };
 $('#gal').onchange = e => { up(e.target.files); e.target.value=''; };
 console.log('[boot] part4 ready');
 refresh();
+/* ===== 清空全部 ===== */
+/* ===== 清空全部 ===== */
+async function clearAll() {
+  const r = await api('/api/tasks');
+  if (r.status === 401) return;
+  const a = await r.json();
+  if (!a.length) { bar.textContent = '没有可清空的记录'; return; }
+  if (!confirm('将删除 ' + a.length + ' 条记录，无法恢复。\n\n建议先点「导出 .tex」并等下载完成。继续？')) return;
+
+  bar.textContent = '清空中…';
+  const d = await api('/api/tasks', {method: 'DELETE'});
+  if (!d.ok) { bar.textContent = '失败 HTTP ' + d.status; return; }
+
+  const j = await d.json();
+  bar.textContent = '已清空 ' + j.deleted + ' 条'
+    + (j.backup ? '，已备份 ' + j.backup : '');
+  refresh();
+}
+if ($('#btnClear')) $('#btnClear').onclick = clearAll;
+console.log('[boot] clear ready');
+async function boot() {
+  try {
+    const c = await fetch('/api/config').then(function (r) { return r.json(); });
+    if (c.auth === false) {
+      var el = $('#login');
+      if (el) el.classList.add('hide');
+    } else {
+      const me = await fetch('/api/me').then(function (r) { return r.json(); });
+      if (me.authed) {
+        var e2 = $('#login');
+        if (e2) e2.classList.add('hide');
+      }
+    }
+  } catch (e) {}
+  refresh();
+}
+boot();

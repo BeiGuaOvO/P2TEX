@@ -10,6 +10,8 @@ import os
 import sqlite3
 import time
 import uuid
+import shutil
+from app.render import render_document
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -41,12 +43,18 @@ DB_PATH = DATA / "app.db"
 
 API_KEY = os.environ.get("DEEPSEEK_API_KEY", "").strip()
 MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-flash").strip()
-PASSWORD = os.environ.get("APP_PASSWORD", "changeme")
+PASSWORD = os.environ.get("APP_PASSWORD", "changeme").strip()
+AUTH_ENABLED = os.environ.get("AUTH_ENABLED", "true").strip().lower() in (
+    "1", "true", "yes", "on")
+if not PASSWORD:                      # 密码留空 = 直接关闭验证
+    AUTH_ENABLED = False
 SECRET = os.environ.get("SESSION_SECRET") or hashlib.sha256(PASSWORD.encode()).hexdigest()
 CONCURRENCY = int(os.environ.get("WORKER_CONCURRENCY", "2"))
 SEGMENT = os.environ.get("SEGMENT", "false").lower() == "true"
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "false").lower() == "true"
 MAX_MB = int(os.environ.get("MAX_UPLOAD_MB", "25"))
+BACKUP_DIR = DATA / "backups"
+KEEP_BACKUPS = 10
 
 # ---------------------------------------------------------------- 数据库
 
@@ -106,6 +114,36 @@ def row_to_dict(r) -> dict | None:
     d["est_cost_usd"] = round((pt * 0.15 + ct * 0.60) / 1e6, 6)
     return d
 
+def backup_and_clear() -> tuple[int, str]:
+    """先落一份 JSON 备份，再清空记录与图片。返回 (删除条数, 备份文件名)。"""
+    rows = q("select * from tasks order by created_at")
+    name = ""
+
+    if rows:
+        BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+        name = f"backup-{time.strftime('%Y%m%d-%H%M%S')}.json"
+        payload = []
+        for r in rows:
+            d = dict(r)
+            d["questions"] = json.loads(d.get("questions") or "[]")
+            payload.append(d)
+        (BACKUP_DIR / name).write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), "utf-8")
+        olds = sorted(BACKUP_DIR.glob("backup-*.json"))
+        for p in olds[:-KEEP_BACKUPS]:
+            p.unlink(missing_ok=True)
+
+    x("delete from tasks")
+    for d in (RAW, THUMB):
+        shutil.rmtree(d, ignore_errors=True)
+        d.mkdir(parents=True, exist_ok=True)
+
+    try:
+        x("vacuum")            # 回收 sqlite 文件体积
+    except Exception:
+        pass
+
+    return len(rows), name
 
 def set_task(tid: str, **kw) -> None:
     kw["updated_at"] = time.time()
@@ -121,6 +159,8 @@ def sess_value() -> str:
 
 
 def authed(req: Request) -> bool:
+    if not AUTH_ENABLED:
+        return True
     c = req.cookies.get("sess")
     return bool(c) and hmac.compare_digest(c, sess_value())
 
@@ -206,6 +246,11 @@ SYSTEM_PROMPT = r"""你是理科试卷题目转录器，只做忠实转写：不
 4. 只允许标准宏包命令，禁止自定义宏、禁止 \newcommand。
 5. 无法辨认的字符写 \square，并在 uncertain 中说明位置与原因，严禁按题意推测。
 6. 图形不要用文字描述替代题目内容，只记入 figures（bbox 归一化，仅作参考）。
+7. options 的 latex 只写选项内容，不要带 A. B. C. D. 之类标签。
+8. 填空题的横线统一写成 \blank{n}，n 为横线宽度（单位 em，一般 3–10，
+   按原图横线长度估算）。不要用 \underline、不要用一串下划线。
+9. 解答题（无选项的题）额外输出 "answer_lines": 整数，
+   表示作答需要多少行（一般 8–20，看原图留白多少）。
 
 只输出 JSON，格式：
 {"questions":[{"number":"12","stem_latex":"...",
@@ -344,6 +389,12 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+@app.middleware("http")
+async def no_cache_static(request: Request, call_next):
+    resp = await call_next(request)
+    if request.url.path.startswith("/static/"):
+        resp.headers["Cache-Control"] = "no-store, must-revalidate"
+    return resp
 app.mount("/static", StaticFiles(directory=str(ROOT / "static")), name="static")
 
 
@@ -357,10 +408,13 @@ async def index():
 
 @app.post("/api/login")
 async def login(req: Request):
+    if not AUTH_ENABLED:
+        return {"ok": True, "auth": False}
     body = await req.json()
     if not hmac.compare_digest(str(body.get("password", "")), PASSWORD):
         raise HTTPException(401, "密码错误")
-    resp = Response(json.dumps({"ok": True}), media_type="application/json")
+    resp = Response(
+        json.dumps({"ok": True, "auth": True}), media_type="application/json")
     resp.set_cookie(
         "sess",
         sess_value(),
@@ -378,6 +432,10 @@ async def logout():
     resp.delete_cookie("sess")
     return resp
 
+@app.get("/api/config")
+async def app_config():
+    """告诉前端是否需要登录。不含任何敏感信息。"""
+    return {"auth": AUTH_ENABLED}
 
 @app.get("/api/me")
 async def me(req: Request):
@@ -462,6 +520,19 @@ async def edit_task(req: Request, tid: str):
     set_task(tid, latex=str(body["latex"]))
     return {"ok": True}
 
+@app.delete("/api/tasks")
+async def clear_tasks(req: Request):
+    require(req)
+
+    # 取消还在排队的任务，避免清空后又冒出新结果
+    while True:
+        try:
+            queue.get_nowait()
+        except asyncio.QueueEmpty:
+            break
+
+    deleted, backup = await asyncio.to_thread(backup_and_clear)
+    return {"deleted": deleted, "backup": backup}
 
 @app.delete("/api/tasks/{tid}")
 async def del_task(req: Request, tid: str):
@@ -471,18 +542,13 @@ async def del_task(req: Request, tid: str):
     (THUMB / f"{tid}.jpg").unlink(missing_ok=True)
     return {"ok": True}
 
-
-@app.get("/api/export.tex")
-async def export_tex(req: Request):
+@app.get("/api/export/paper.tex")
+async def export_paper(req: Request):
     require(req)
-    rows = q(
-        "select latex, created_at from tasks where status='done' order by created_at"
-    )
-    parts = []
+    rows = q("select questions from tasks where status='done' order by created_at")
+    allq = []
     for r in rows:
-        stamp = time.strftime("%Y-%m-%d %H:%M", time.localtime(r["created_at"]))
-        parts.append(f"% ---------- {stamp} ----------\n{r['latex']}")
-    return PlainTextResponse(
-        "\n\n".join(parts),
-        headers={"Content-Disposition": 'attachment; filename="wrongbook.tex"'},
-    )
+        allq.extend(json.loads(r["questions"] or "[]"))
+    tex = render_document(allq, title="错题本")
+    return PlainTextResponse(tex, headers={
+        "Content-Disposition": 'attachment; filename="cuoti.tex"'})
