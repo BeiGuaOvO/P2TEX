@@ -14,6 +14,7 @@ import shutil
 from app.render import render_document
 from contextlib import asynccontextmanager
 from pathlib import Path
+from app.pdf import compile_pdf, CACHE_DIR as _PDF_CACHE_UNSET
 
 from dotenv import load_dotenv
 
@@ -87,7 +88,7 @@ def x(sql: str, args: tuple = ()) -> None:
 
 
 def init_db() -> None:
-    for d in (DATA, RAW, THUMB):
+    for d in (DATA, RAW, THUMB, DATA/"pdf"):
         d.mkdir(parents=True, exist_ok=True)
     x(
         """create table if not exists tasks(
@@ -137,6 +138,8 @@ def backup_and_clear() -> tuple[int, str]:
     for d in (RAW, THUMB):
         shutil.rmtree(d, ignore_errors=True)
         d.mkdir(parents=True, exist_ok=True)
+    for p in (DATA / "pdf").glob("*.pdf"):
+        p.unlink(missing_ok=True)
 
     try:
         x("vacuum")            # 回收 sqlite 文件体积
@@ -338,6 +341,7 @@ def compose_latex(questions: list) -> str:
 
 
 queue: asyncio.Queue = asyncio.Queue()
+_compile_sem = asyncio.Semaphore(2)     # 同时最多编 2 份，防止 CPU 打满
 
 
 async def process(tid: str) -> None:
@@ -552,3 +556,31 @@ async def export_paper(req: Request):
     tex = render_document(allq, title="错题本")
     return PlainTextResponse(tex, headers={
         "Content-Disposition": 'attachment; filename="cuoti.tex"'})
+
+@app.get("/api/export/paper.pdf")
+async def export_pdf(req: Request, inline: int = 0):
+    require(req)
+    rows = q("select questions from tasks where status='done' order by created_at")
+    allq = []
+    for r in rows:
+        allq.extend(json.loads(r["questions"] or "[]"))
+    if not allq:
+        raise HTTPException(400, "没有可导出的题目")
+
+    tex = render_document(allq, title="错题本")
+
+    async with _compile_sem:
+        try:
+            data = await asyncio.to_thread(compile_pdf, tex)
+        except RuntimeError as e:
+            raise HTTPException(400, str(e)[:800])
+
+    disp = "inline" if inline else "attachment"
+    return Response(
+        data,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'{disp}; filename="cuoti.pdf"',
+            "Cache-Control": "no-store",
+        },
+    )

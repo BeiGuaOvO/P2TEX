@@ -1,22 +1,23 @@
 import re
+import os
 
-PREAMBLE = r"""\documentclass[UTF8,a4paper,11pt]{ctexart}
+_FONTSET = os.environ.get("CTEX_FONTSET", "").strip()
+PREAMBLE = (
+    r"\documentclass[UTF8,a4paper,11pt%s]{ctexart}" % (
+        ("," + _FONTSET) if _FONTSET else "")
+    + "\n" + r"""
 \usepackage[margin=2cm]{geometry}
 \usepackage{amsmath,amssymb,bm}
 \usepackage[version=4]{mhchem}
 \usepackage{enumitem}
 \usepackage{graphicx}
 \usepackage{xcolor}
-
 \setlength{\parindent}{0pt}
 \setlist{nosep, leftmargin=2.2em, topsep=0.3em}
-
-% 填空横线：\fillblank{4em}
 \newcommand{\fillblank}[1]{\underline{\hspace{#1}}}
-
-% 订正留白：\answerspace[8] -> 8 行空白
 \newcommand{\answerspace}[1][8]{\par\vspace*{#1\baselineskip}}
 """
+)
 BLANK_CMD = re.compile(r'\\blank\{([\d.]+)\}')
 UNDERSCORES = re.compile(r'_{3,}')
 UNDERLINE_HSPACE = re.compile(r'\\underline\{\\hspace\{([\d.]+(?:em|ex|cm|mm|pt))\}\}')

@@ -23,12 +23,9 @@
 </div>
 
 <div class="p">
-  <a href="/api/export/paper.tex" style="flex:1;text-decoration:none">
-    <button style="width:100%">导出试卷</button>
-  </a>
-  <button id="btnClear" style="flex:0 0 34%;border-color:#5a2323;color:#ff9b9b">
-    清空全部
-  </button>
+  <button id="btnPdf" style="flex:1">导出PDF</button>
+  <button id="btnTex" style="flex:1">导出Tex</button>
+  <button id="btnClear" style="flex:0 0 26%">清空</button>
 </div>
 
 <input id="cam" type="file" accept="image/*" capture="environment" hidden>
@@ -37,7 +34,7 @@
 <div id="bar"></div>
 <div id="list"></div>
 
-<script src="/static/crop.js?v=3"></script>
-<script src="/static/app.js?v=3"></script>
+<script src="/static/crop.js?v=4"></script>
+<script src="/static/app.js?v=4"></script>
 </body>
 </html>

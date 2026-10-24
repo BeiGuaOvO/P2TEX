@@ -149,3 +149,46 @@ async function boot() {
   refresh();
 }
 boot();
+async function saveFile(url, name, mime, ext, desc) {
+  var types = [{ description: desc, accept: {} }];
+  types[0].accept[mime] = [ext];
+
+  if (window.showSaveFilePicker && window.isSecureContext) {
+    var handle = null;
+    try { handle = await window.showSaveFilePicker({suggestedName: name, types: types}); }
+    catch (e) { if (e && e.name === 'AbortError') { bar.textContent = '已取消'; return; } }
+    if (handle) {
+      bar.textContent = '生成中…';
+      var r = await api(url);
+      if (!r.ok) { bar.textContent = '导出失败 HTTP ' + r.status; return; }
+      var w = await handle.createWritable();
+      await w.write(await r.blob());
+      await w.close();
+      bar.textContent = '已保存';
+      return;
+    }
+  }
+  bar.textContent = '生成中…';
+  var r2 = await api(url);
+  if (!r2.ok) { bar.textContent = '导出失败 HTTP ' + r2.status; return; }
+  var u = URL.createObjectURL(await r2.blob());
+  var a = document.createElement('a');
+  a.href = u; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(function () { URL.revokeObjectURL(u); }, 4000);
+  bar.textContent = '已下载到默认位置';
+}
+console.log('[boot] export ready');
+/* ===== PDF 导出 ===== */
+function openPdf() {
+  const url = '/api/export/paper.pdf?inline=1&t=' + Date.now();
+  const w = window.open(url, '_blank');
+  if (!w) bar.textContent = '弹窗被拦截，请允许本站弹窗';
+  else bar.textContent = '正在生成 PDF…';
+}
+if ($('#btnPdf')) $('#btnPdf').onclick = openPdf;
+if ($('#btnTex')) $('#btnTex').onclick = function () {
+  return saveFile('/api/export/paper.tex', 'cuoti.tex',
+                  'text/plain', '.tex', 'LaTeX 源文件');
+};
+console.log('[boot] pdf ready');
